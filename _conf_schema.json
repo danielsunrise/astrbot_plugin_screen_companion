@@ -1,0 +1,208 @@
+{
+  "enabled": {
+    "description": "是否开启自动截图互动",
+    "type": "bool",
+    "hint": "开启后，机器人将根据设定的时间间隔截取屏幕并进行主动点评。",
+    "default": false
+  },
+  "interaction_mode": {
+    "description": "互动模式",
+    "type": "string",
+    "hint": "选择预设的互动模式：\n1. 轻度互动模式：检查间隔180秒，触发概率3%，适合日常使用\n2. 中度互动模式：检查间隔60秒，触发概率8%，适合直播/录屏陪伴\n3. 高频互动模式：检查间隔30秒，触发概率20%，适合测试/整活\n4. 静默模式：检查间隔300秒，触发概率1%，只在特定时段活跃\n选择自定义则使用下方手动配置的参数。",
+    "default": "自定义",
+    "options": [
+      "自定义",
+      "轻度互动模式",
+      "中度互动模式",
+      "高频互动模式",
+      "静默模式"
+    ]
+  },
+  "check_interval": {
+    "description": "检查间隔",
+    "type": "int",
+    "hint": "每隔多少秒进行一次触发判定，最小值为10秒。",
+    "default": 300,
+    "obvious_hint": true
+  },
+  "trigger_probability": {
+    "description": "触发概率",
+    "type": "int",
+    "hint": "每次判定时触发的概率（0-100），例如50表示有50%的概率触发。",
+    "default": 30,
+    "obvious_hint": true
+  },
+  "active_time_range": {
+    "description": "活跃时间段",
+    "type": "string",
+    "hint": "设定自动窥屏的时间段，格式为'H:MM-HH:MM'，例如'09:00-22:00'。支持跨天设置，例如'22:00-06:00'表示从晚上10点到次日早上6点。留空表示全天活跃。",
+    "default": "",
+    "obvious_hint": true
+  },
+  "system_prompt": {
+    "description": "机器人的人格设定",
+    "type": "text",
+    "hint": "定义机器人如何观察你的屏幕。例如：'你是一个毒舌的健身教练，如果看到我在摸鱼看视频，请严厉地吐槽我；如果我在写代码，请鼓励我。'",
+    "default": "你是一个幽默、敏锐的屏幕观察伴侣。你会根据用户当前的屏幕截图，以朋友的口吻对用户的行为进行简短的吐槽、互动或提供建议。字数请控制在50字以内。",
+    "editor_mode": true,
+    "editor_language": "text"
+  },
+  "watch_mode": {
+    "description": "观察模式",
+    "type": "string",
+    "hint": "选择'观看'模式（正常观察）或'偷看'模式（偷偷瞄了一眼）。",
+    "default": "偷看",
+    "options": [
+      "观看",
+      "偷看"
+    ]
+  },
+  "capture_mode": {
+    "description": "截图区域",
+    "type": "string",
+    "hint": "选择截取全屏还是活动窗口（注：部分系统环境下活动窗口模式可能失效）。",
+    "default": "fullscreen",
+    "options": [
+      "fullscreen",
+      "active_window"
+    ]
+  },
+  "image_quality": {
+    "description": "截图压缩质量",
+    "type": "int",
+    "hint": "设置 1-100 之间的整数。较低的质量可以减少网络流量消耗和 AI 响应延迟。",
+    "default": 70
+  },
+  "image_prompt": {
+    "description": "图像识别提示词",
+    "type": "text",
+    "hint": "自定义LLM识别图像时的提示词，以获得更好的识别效果。",
+    "default": "请详细分析这张屏幕截图，识别出：1. 屏幕上显示的内容和界面元素 2. 用户可能正在进行的操作或任务 3. 屏幕上的关键信息和细节。请提供详细的分析结果，以便后续基于此进行针对性互动。",
+    "editor_mode": true,
+    "editor_language": "text"
+  },
+  "use_external_vision": {
+    "description": "使用外接视觉API",
+    "type": "bool",
+    "hint": "开启后，使用外接API进行视觉模型调用，而不是Astrbot自带的视觉模型。",
+    "default": true
+  },
+  "vision_api_url": {
+    "description": "视觉API地址",
+    "type": "string",
+    "hint": "外接视觉API的URL地址，例如：https://api.qhaigc.net/v1/chat/completions。",
+    "default": ""
+  },
+  "vision_api_key": {
+    "description": "视觉API密钥",
+    "type": "string",
+    "hint": "外接视觉API的密钥。",
+    "default": ""
+  },
+  "vision_api_model": {
+    "description": "视觉API模型",
+    "type": "string",
+    "hint": "外接视觉API使用的模型名称。",
+    "default": ""
+  },
+  "weather_api_key": {
+    "description": "天气API密钥",
+    "type": "string",
+    "hint": "用于获取天气信息的API密钥，例如OpenWeatherMap的API密钥。留空则不启用天气感知功能。",
+    "default": ""
+  },
+  "weather_city": {
+    "description": "城市名称",
+    "type": "string",
+    "hint": "用于获取天气信息的城市名称，例如'Beijing'或'上海'。",
+    "default": ""
+  },
+  "enable_diary": {
+    "description": "启用日记功能",
+    "type": "bool",
+    "hint": "开启后，bot会在每天设定的时间总结当天通过屏幕看到的内容，并生成风格化的日记。",
+    "default": false
+  },
+  "diary_time": {
+    "description": "日记生成时间",
+    "type": "string",
+    "hint": "每天生成日记的时间，格式为'HH:MM'，例如'22:00'。",
+    "default": "22:00"
+  },
+  "diary_storage": {
+    "description": "日记存储路径",
+    "type": "string",
+    "hint": "日记文件的存储路径，留空则使用默认路径。",
+    "default": ""
+  },
+  "diary_reference_days": {
+    "description": "日记参考天数",
+    "type": "int",
+    "hint": "生成日记时参考前几天的日记内容，0表示不参考，1表示参考前1天，以此类推。",
+    "default": 0
+  },
+  "admin_qq": {
+    "description": "管理员QQ号",
+    "type": "string",
+    "hint": "填写管理员的QQ号，用于接收主动消息和通知。",
+    "default": ""
+  },
+  "proactive_target": {
+    "description": "主动消息推送目标",
+    "type": "string",
+    "hint": "填写接收主动消息的统一会话ID（unified_msg_origin）。如果不填写，插件将尝试使用管理员QQ号构建目标。格式参考：aiocqhttp:private_message:123456",
+    "default": ""
+  },
+  "save_local": {
+    "description": "是否在本地保留截图",
+    "type": "bool",
+    "hint": "如果开启，最近一次截图将保存在 data 目录中。关闭则在发送给 AI 后立即删除，以节省空间。",
+    "default": false
+  },
+  "custom_tasks": {
+    "description": "自定义监控任务",
+    "type": "text",
+    "hint": "设置特定时间的监控任务，格式为每行一个任务：时间 提示词。例如：02:00 这么晚了还在工作，快去休息吧！",
+    "default": "",
+    "editor_mode": true,
+    "editor_language": "text"
+  },
+  "enable_mic_monitor": {
+    "description": "启用麦克风监听",
+    "type": "bool",
+    "hint": "开启后，插件会监听麦克风音量，当音量超过阈值时触发截屏回复。",
+    "default": false
+  },
+  "mic_threshold": {
+    "description": "麦克风音量阈值",
+    "type": "int",
+    "hint": "麦克风音量超过此值时触发截屏回复，范围 0-100。",
+    "default": 60
+  },
+  "mic_check_interval": {
+    "description": "麦克风检查间隔",
+    "type": "int",
+    "hint": "每隔多少秒检查一次麦克风音量，最小值为 1 秒。",
+    "default": 5
+  },
+  "user_preferences": {
+    "description": "用户偏好设置",
+    "type": "text",
+    "hint": "设置不同场景的互动风格，格式为每行一个场景：场景名称 互动风格描述。例如：编程 严厉的导师风格，催促用户专注编码。",
+    "default": "",
+    "editor_mode": true,
+    "editor_language": "text"
+  },
+  "enable_learning": {
+    "description": "启用用户行为学习",
+    "type": "bool",
+    "hint": "开启后，插件会根据用户的反馈和行为模式调整互动方式。",
+    "default": false
+  },
+  "learning_storage": {
+    "description": "学习数据存储路径",
+    "type": "string",
+    "hint": "用户行为学习数据的存储路径，留空则使用默认路径。",
+    "default": ""
+  }
+}
