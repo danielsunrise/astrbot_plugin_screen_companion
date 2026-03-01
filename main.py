@@ -43,7 +43,6 @@ class ScreenCompanion(Star):
         os.makedirs(self.temp_dir, exist_ok=True)
 
         self.background_tasks.append(asyncio.create_task(self._cleanup_temp_task()))
-
         logger.info("ScreenCompanion 初始化完成")
 
     async def stop(self):
@@ -51,7 +50,7 @@ class ScreenCompanion(Star):
         self.is_running = False
         self.running = False
 
-        for task_id, task in list(self.auto_tasks.items()):
+        for _, task in list(self.auto_tasks.items()):
             task.cancel()
         self.auto_tasks.clear()
 
@@ -160,7 +159,6 @@ $bmp.Dispose()
             active_window_title = ""
             img = None
 
-            # 可选读取活动窗口标题
             if sys.platform == "win32":
                 try:
                     import pygetwindow as gw
@@ -257,7 +255,6 @@ $bmp.Dispose()
             ],
             "stream": False
         }
-        # 清理 None，避免某些服务拒收
         if payload.get("model") is None:
             del payload["model"]
 
@@ -279,7 +276,6 @@ $bmp.Dispose()
                     except Exception:
                         return f"视觉API返回非JSON：{text[:500]}"
 
-                    # OpenAI兼容结构解析
                     if isinstance(data, dict):
                         choices = data.get("choices")
                         if isinstance(choices, list) and choices:
@@ -301,7 +297,6 @@ $bmp.Dispose()
                             if c0.get("text"):
                                 return str(c0["text"]).strip()
 
-                        # 兜底字段
                         for key in ("response", "content", "result", "output"):
                             if key in data and data[key]:
                                 return str(data[key]).strip()
@@ -341,15 +336,12 @@ $bmp.Dispose()
         return "现在是深夜，注意休息。"
 
     async def _analyze_screen(self, image_bytes: bytes, active_window_title: str = "", custom_prompt: str = "") -> str:
-        # 1) 必走视觉识别
         recognition = await self._call_external_vision_api(image_bytes)
 
-        # 2) 如无文本 provider，直接返回视觉结果（确保“不是只截图”）
         provider = self.context.get_using_provider()
         if not provider:
             return f"【屏幕分析】\n{recognition}"
 
-        # 3) 有 provider 时再做人格化润色
         system_prompt = self.config.get("system_prompt", "").strip() or DEFAULT_SYSTEM_PROMPT
         scene = self._identify_scene(active_window_title)
         time_prompt = self._build_time_prompt()
@@ -373,17 +365,24 @@ $bmp.Dispose()
             rsp = await provider.text_chat(prompt=prompt, system_prompt=system_prompt)
             if rsp and hasattr(rsp, "completion_text") and rsp.completion_text:
                 return rsp.completion_text.strip()
-
             return f"【屏幕分析】\n{recognition}"
         except Exception as e:
             logger.error(f"LLM互动失败: {e}")
             return f"【屏幕分析】\n{recognition}"
 
     # =========================
+    # 参数工具
+    # =========================
+    def _args_to_text(self, args) -> str:
+        if not args:
+            return ""
+        return " ".join(str(x) for x in args if x is not None).strip()
+
+    # =========================
     # 命令
     # =========================
     @filter.command("kpcap")
-    async def kpcap(self, event: AstrMessageEvent):
+    async def kpcap(self, event: AstrMessageEvent, *args):
         """仅截图并发送（调试截图链路）"""
         ok, msg = self._check_env()
         if not ok:
@@ -400,7 +399,7 @@ $bmp.Dispose()
             yield event.plain_result(f"截图失败: {e}")
 
     @filter.command("kpr")
-    async def kpr(self, event: AstrMessageEvent):
+    async def kpr(self, event: AstrMessageEvent, *args):
         """截图并返回视觉模型原始结果（验证图是否真的送去分析）"""
         ok, msg = self._check_env()
         if not ok:
@@ -414,7 +413,8 @@ $bmp.Dispose()
             img_path = self._save_temp_jpg(image_bytes)
             await self.context.send_message(event.unified_msg_origin, MessageChain([Image(file=img_path)]))
 
-            parts = self._split_message(f"活动窗口：{title or '未知'}\n\n{raw}", 1000)
+            text = f"活动窗口：{title or '未知'}\n\n{raw}"
+            parts = self._split_message(text, 1000)
             if len(parts) == 1:
                 yield event.plain_result(parts[0])
             else:
@@ -429,19 +429,25 @@ $bmp.Dispose()
             yield event.plain_result(f"kpr失败: {e}")
 
     @filter.command("kp")
-    async def kp(self, event: AstrMessageEvent):
+    async def kp(self, event: AstrMessageEvent, *args):
         """截图 + 视觉识别 +（可选）人格LLM回复"""
         ok, msg = self._check_env()
         if not ok:
             yield event.plain_result(f"⚠️ 无法使用屏幕观察：\n{msg}")
             return
 
+        custom_prompt = self._args_to_text(args)
+
         try:
             image_bytes, title = await asyncio.wait_for(self._capture_screen_bytes(), timeout=20)
             img_path = self._save_temp_jpg(image_bytes)
 
             text = await asyncio.wait_for(
-                self._analyze_screen(image_bytes, active_window_title=title),
+                self._analyze_screen(
+                    image_bytes,
+                    active_window_title=title,
+                    custom_prompt=custom_prompt
+                ),
                 timeout=150
             )
 
@@ -465,7 +471,7 @@ $bmp.Dispose()
             yield event.plain_result(f"执行失败: {e}")
 
     @filter.command("kps")
-    async def kps(self, event: AstrMessageEvent):
+    async def kps(self, event: AstrMessageEvent, *args):
         """快捷开关自动观察"""
         if self.is_running:
             self.is_running = False
@@ -480,8 +486,9 @@ $bmp.Dispose()
             self.is_running = True
             task_id = f"task_{self.task_counter}"
             self.task_counter += 1
+            custom_prompt = self._args_to_text(args)
             self.auto_tasks[task_id] = asyncio.create_task(
-                self._auto_screen_task(event, task_id=task_id)
+                self._auto_screen_task(event, task_id=task_id, custom_prompt=custom_prompt)
             )
             yield event.plain_result(f"已开启自动观察：{task_id}")
 
@@ -490,7 +497,9 @@ $bmp.Dispose()
         pass
 
     @kpi_group.command("start")
-    async def kpi_start(self, event: AstrMessageEvent):
+    async def kpi_start(self, event: AstrMessageEvent, *args):
+        custom_prompt = self._args_to_text(args)
+
         if not self.config.get("enabled", True):
             yield event.plain_result("配置中 enabled=false，自动观察未启用。")
             return
@@ -500,12 +509,14 @@ $bmp.Dispose()
         task_id = f"task_{self.task_counter}"
         self.task_counter += 1
         self.auto_tasks[task_id] = asyncio.create_task(
-            self._auto_screen_task(event, task_id=task_id)
+            self._auto_screen_task(event, task_id=task_id, custom_prompt=custom_prompt)
         )
         yield event.plain_result(f"✅ 已启动 {task_id}")
 
     @kpi_group.command("stop")
-    async def kpi_stop(self, event: AstrMessageEvent, task_id: str = None):
+    async def kpi_stop(self, event: AstrMessageEvent, *args):
+        task_id = str(args[0]).strip() if args else None
+
         if task_id:
             t = self.auto_tasks.get(task_id)
             if not t:
@@ -524,7 +535,7 @@ $bmp.Dispose()
             yield event.plain_result("已停止所有自动任务")
 
     @kpi_group.command("list")
-    async def kpi_list(self, event: AstrMessageEvent):
+    async def kpi_list(self, event: AstrMessageEvent, *args):
         if not self.auto_tasks:
             yield event.plain_result("当前没有运行中的自动任务")
             return
@@ -532,10 +543,25 @@ $bmp.Dispose()
         yield event.plain_result(msg)
 
     @kpi_group.command("add")
-    async def kpi_add(self, event: AstrMessageEvent, interval: int, *prompt):
+    async def kpi_add(self, event: AstrMessageEvent, *args):
+        """
+        用法：
+        /kpi add 60 你可以提醒我喝水
+        """
+        interval = 60
+        custom_prompt = ""
+
+        if args:
+            first = str(args[0]).strip()
+            if first.isdigit():
+                interval = int(first)
+                custom_prompt = self._args_to_text(args[1:])
+            else:
+                custom_prompt = self._args_to_text(args)
+
         if interval < 10:
             interval = 10
-        custom_prompt = " ".join(prompt).strip()
+
         if not self.is_running:
             self.is_running = True
 
