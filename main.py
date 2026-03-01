@@ -1,20 +1,21 @@
 import asyncio
 import io
-import base64
-import sys
 import os
+import sys
+import json
+import time
+import base64
+import uuid
 import datetime
 import tempfile
-import uuid
-import time
-import json
 import subprocess
+import random
 from typing import Optional, List, Dict, Tuple
 
-from astrbot.api.event import filter, AstrMessageEvent, MessageChain
-from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger
-from astrbot.api.message_components import Plain, Image, BaseMessageComponent
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
+from astrbot.api.message_components import Plain, Image
+from astrbot.api.star import Context, Star
 
 
 DEFAULT_SYSTEM_PROMPT = """角色设定：诺星缘。
@@ -31,63 +32,61 @@ class ScreenCompanion(Star):
         super().__init__(context)
         self.config = config
 
-        # 自动任务
         self.is_running = False
         self.auto_tasks: Dict[str, asyncio.Task] = {}
         self.task_counter = 0
 
-        # 后台控制
         self.running = True
         self.background_tasks: List[asyncio.Task] = []
 
-        # 临时截图目录（不立即删除，交给清理任务）
         self.temp_dir = os.path.join(tempfile.gettempdir(), "astrbot_screen_companion")
         os.makedirs(self.temp_dir, exist_ok=True)
 
-        # 启动清理任务（清理旧截图）
         self.background_tasks.append(asyncio.create_task(self._cleanup_temp_task()))
 
         logger.info("ScreenCompanion 初始化完成")
 
     async def stop(self):
-        """插件停止时清理任务"""
         logger.info("停止 ScreenCompanion，开始清理任务")
         self.is_running = False
+        self.running = False
 
         for task_id, task in list(self.auto_tasks.items()):
             task.cancel()
         self.auto_tasks.clear()
 
-        self.running = False
         for t in self.background_tasks:
             t.cancel()
         self.background_tasks.clear()
 
-    # ---------------------------
-    # 基础检查
-    # ---------------------------
+    # =========================
+    # 环境与依赖
+    # =========================
     def _check_dependencies(self):
         missing = []
         backend = self.config.get("capture_backend", "powershell" if sys.platform == "win32" else "pyautogui")
 
         try:
-            from PIL import Image as PILImage  # noqa
-        except ImportError:
+            from PIL import Image as _  # noqa: F401
+        except Exception:
             missing.append("Pillow")
 
         if backend == "pyautogui":
             try:
-                import pyautogui  # noqa
-            except ImportError:
+                import pyautogui as _  # noqa: F401
+            except Exception:
                 missing.append("pyautogui")
 
-        if sys.platform == "win32":
-            # 可选：活动窗口识别
-            if self.config.get("capture_mode", "fullscreen") == "active_window":
-                try:
-                    import pygetwindow  # noqa
-                except ImportError:
-                    missing.append("pygetwindow")
+        if sys.platform == "win32" and self.config.get("capture_mode", "fullscreen") == "active_window":
+            try:
+                import pygetwindow as _  # noqa: F401
+            except Exception:
+                missing.append("pygetwindow")
+
+        try:
+            import aiohttp as _  # noqa: F401
+        except Exception:
+            missing.append("aiohttp")
 
         if missing:
             return False, f"缺少依赖: {', '.join(missing)}。请安装: pip install {' '.join(missing)}"
@@ -114,11 +113,10 @@ class ScreenCompanion(Star):
         except Exception as e:
             return False, f"环境检查失败: {e}"
 
-    # ---------------------------
+    # =========================
     # 截图
-    # ---------------------------
+    # =========================
     def _capture_with_powershell_png(self) -> bytes:
-        """Windows 原生截图，返回 PNG bytes"""
         out_png = os.path.join(self.temp_dir, f"ps_capture_{uuid.uuid4()}.png")
         ps = f"""
 $ErrorActionPreference='Stop'
@@ -141,7 +139,6 @@ $bmp.Dispose()
             )
             if r.returncode != 0:
                 raise RuntimeError(r.stderr.strip() or "PowerShell 截图失败")
-
             with open(out_png, "rb") as f:
                 return f.read()
         finally:
@@ -153,7 +150,7 @@ $bmp.Dispose()
 
     async def _capture_screen_bytes(self) -> Tuple[bytes, str]:
         """
-        返回: (jpeg_bytes, active_window_title)
+        返回：(jpeg_bytes, active_window_title)
         """
         def _core():
             from PIL import Image as PILImage
@@ -163,7 +160,7 @@ $bmp.Dispose()
             active_window_title = ""
             img = None
 
-            # 尝试获取活动窗口标题
+            # 可选读取活动窗口标题
             if sys.platform == "win32":
                 try:
                     import pygetwindow as gw
@@ -179,7 +176,6 @@ $bmp.Dispose()
             else:
                 import pyautogui
                 shot = None
-
                 if mode == "active_window" and sys.platform == "win32":
                     try:
                         import pygetwindow as gw
@@ -189,10 +185,8 @@ $bmp.Dispose()
                             shot = pyautogui.screenshot(region=(w.left, w.top, w.width, w.height))
                     except Exception as e:
                         logger.debug(f"活动窗口截图失败，回退全屏: {e}")
-
                 if shot is None:
                     shot = pyautogui.screenshot()
-
                 img = shot.convert("RGB") if shot.mode != "RGB" else shot
 
             quality = self.config.get("image_quality", 75)
@@ -214,7 +208,6 @@ $bmp.Dispose()
         return path
 
     async def _cleanup_temp_task(self):
-        """每5分钟清理一次临时目录中超过 keep_minutes 的文件"""
         keep_minutes = int(self.config.get("temp_keep_minutes", 30))
         while self.running:
             try:
@@ -233,9 +226,9 @@ $bmp.Dispose()
                 logger.debug(f"清理临时文件失败: {e}")
             await asyncio.sleep(300)
 
-    # ---------------------------
-    # 视觉API + LLM互动
-    # ---------------------------
+    # =========================
+    # 视觉 API
+    # =========================
     async def _call_external_vision_api(self, image_bytes: bytes) -> str:
         import aiohttp
 
@@ -248,11 +241,11 @@ $bmp.Dispose()
         )
 
         if not api_url:
-            return "未配置视觉API地址。"
+            return "未配置视觉API地址（vision_api_url）。"
 
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         payload = {
-            "model": api_model,
+            "model": api_model if api_model else None,
             "messages": [
                 {
                     "role": "user",
@@ -264,6 +257,10 @@ $bmp.Dispose()
             ],
             "stream": False
         }
+        # 清理 None，避免某些服务拒收
+        if payload.get("model") is None:
+            del payload["model"]
+
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -275,33 +272,48 @@ $bmp.Dispose()
                     text = await resp.text()
                     if resp.status != 200:
                         logger.error(f"视觉API失败: {resp.status} {text}")
-                        return f"视觉识别失败（HTTP {resp.status}）"
+                        return f"视觉识别失败（HTTP {resp.status}）: {text[:500]}"
 
                     try:
                         data = json.loads(text)
                     except Exception:
-                        return "视觉API返回非JSON。"
+                        return f"视觉API返回非JSON：{text[:500]}"
 
-                    # 兼容 OpenAI 风格
+                    # OpenAI兼容结构解析
                     if isinstance(data, dict):
-                        if "choices" in data and data["choices"]:
-                            c0 = data["choices"][0]
-                            if isinstance(c0, dict):
-                                msg = c0.get("message", {})
-                                if isinstance(msg, dict) and msg.get("content"):
-                                    return str(msg["content"])
-                                if c0.get("text"):
-                                    return str(c0["text"])
-                        if data.get("response"):
-                            return str(data["response"])
-                        if data.get("content"):
-                            return str(data["content"])
+                        choices = data.get("choices")
+                        if isinstance(choices, list) and choices:
+                            c0 = choices[0] if isinstance(choices[0], dict) else {}
+                            msg = c0.get("message", {})
+                            if isinstance(msg, dict):
+                                content = msg.get("content")
+                                if isinstance(content, str) and content.strip():
+                                    return content.strip()
+                                if isinstance(content, list):
+                                    parts = []
+                                    for it in content:
+                                        if isinstance(it, dict):
+                                            t = it.get("text")
+                                            if t:
+                                                parts.append(str(t))
+                                    if parts:
+                                        return "\n".join(parts).strip()
+                            if c0.get("text"):
+                                return str(c0["text"]).strip()
 
-                    return "视觉API返回结构无法识别。"
+                        # 兜底字段
+                        for key in ("response", "content", "result", "output"):
+                            if key in data and data[key]:
+                                return str(data[key]).strip()
+
+                    return f"视觉API返回结构无法识别：{text[:500]}"
         except Exception as e:
             logger.error(f"调用视觉API异常: {e}")
             return f"视觉识别异常: {e}"
 
+    # =========================
+    # 文本分析与人格化
+    # =========================
     def _identify_scene(self, title: str) -> str:
         if not title:
             return "未知"
@@ -329,15 +341,16 @@ $bmp.Dispose()
         return "现在是深夜，注意休息。"
 
     async def _analyze_screen(self, image_bytes: bytes, active_window_title: str = "", custom_prompt: str = "") -> str:
-        provider = self.context.get_using_provider()
-        if not provider:
-            return "未检测到可用LLM提供商。"
-
-        system_prompt = self.config.get("system_prompt", "").strip() or DEFAULT_SYSTEM_PROMPT
-
-        # 先视觉识别
+        # 1) 必走视觉识别
         recognition = await self._call_external_vision_api(image_bytes)
 
+        # 2) 如无文本 provider，直接返回视觉结果（确保“不是只截图”）
+        provider = self.context.get_using_provider()
+        if not provider:
+            return f"【屏幕分析】\n{recognition}"
+
+        # 3) 有 provider 时再做人格化润色
+        system_prompt = self.config.get("system_prompt", "").strip() or DEFAULT_SYSTEM_PROMPT
         scene = self._identify_scene(active_window_title)
         time_prompt = self._build_time_prompt()
 
@@ -360,17 +373,18 @@ $bmp.Dispose()
             rsp = await provider.text_chat(prompt=prompt, system_prompt=system_prompt)
             if rsp and hasattr(rsp, "completion_text") and rsp.completion_text:
                 return rsp.completion_text.strip()
-            return "我看到了你的屏幕，但这次没组织好回复。"
+
+            return f"【屏幕分析】\n{recognition}"
         except Exception as e:
             logger.error(f"LLM互动失败: {e}")
-            return "我看到了你的屏幕，但互动生成失败了。"
+            return f"【屏幕分析】\n{recognition}"
 
-    # ---------------------------
+    # =========================
     # 命令
-    # ---------------------------
+    # =========================
     @filter.command("kpcap")
     async def kpcap(self, event: AstrMessageEvent):
-        """仅截图并发送（调试命令）"""
+        """仅截图并发送（调试截图链路）"""
         ok, msg = self._check_env()
         if not ok:
             yield event.plain_result(f"⚠️ 无法截图：\n{msg}")
@@ -379,16 +393,44 @@ $bmp.Dispose()
         try:
             image_bytes, title = await asyncio.wait_for(self._capture_screen_bytes(), timeout=20)
             img_path = self._save_temp_jpg(image_bytes)
-
             await self.context.send_message(event.unified_msg_origin, MessageChain([Image(file=img_path)]))
             yield event.plain_result(f"截图成功。活动窗口：{title or '未知'}")
         except Exception as e:
             logger.error(f"/kpcap 失败: {e}")
             yield event.plain_result(f"截图失败: {e}")
 
+    @filter.command("kpr")
+    async def kpr(self, event: AstrMessageEvent):
+        """截图并返回视觉模型原始结果（验证图是否真的送去分析）"""
+        ok, msg = self._check_env()
+        if not ok:
+            yield event.plain_result(f"⚠️ 环境不可用：{msg}")
+            return
+
+        try:
+            image_bytes, title = await asyncio.wait_for(self._capture_screen_bytes(), timeout=20)
+            raw = await asyncio.wait_for(self._call_external_vision_api(image_bytes), timeout=120)
+
+            img_path = self._save_temp_jpg(image_bytes)
+            await self.context.send_message(event.unified_msg_origin, MessageChain([Image(file=img_path)]))
+
+            parts = self._split_message(f"活动窗口：{title or '未知'}\n\n{raw}", 1000)
+            if len(parts) == 1:
+                yield event.plain_result(parts[0])
+            else:
+                for i, p in enumerate(parts):
+                    if i < len(parts) - 1:
+                        await self.context.send_message(event.unified_msg_origin, MessageChain([Plain(p)]))
+                        await asyncio.sleep(0.3)
+                    else:
+                        yield event.plain_result(p)
+        except Exception as e:
+            logger.error(f"/kpr 失败: {e}")
+            yield event.plain_result(f"kpr失败: {e}")
+
     @filter.command("kp")
     async def kp(self, event: AstrMessageEvent):
-        """截图 + 视觉识别 + 人格互动"""
+        """截图 + 视觉识别 +（可选）人格LLM回复"""
         ok, msg = self._check_env()
         if not ok:
             yield event.plain_result(f"⚠️ 无法使用屏幕观察：\n{msg}")
@@ -398,12 +440,13 @@ $bmp.Dispose()
             image_bytes, title = await asyncio.wait_for(self._capture_screen_bytes(), timeout=20)
             img_path = self._save_temp_jpg(image_bytes)
 
-            text = await asyncio.wait_for(self._analyze_screen(image_bytes, active_window_title=title), timeout=150)
+            text = await asyncio.wait_for(
+                self._analyze_screen(image_bytes, active_window_title=title),
+                timeout=150
+            )
 
-            # 先发图，再发文
             await self.context.send_message(event.unified_msg_origin, MessageChain([Image(file=img_path)]))
 
-            # 文本长了就分段
             parts = self._split_message(text, max_length=1000)
             if len(parts) == 1:
                 yield event.plain_result(parts[0])
@@ -437,7 +480,9 @@ $bmp.Dispose()
             self.is_running = True
             task_id = f"task_{self.task_counter}"
             self.task_counter += 1
-            self.auto_tasks[task_id] = asyncio.create_task(self._auto_screen_task(event, task_id=task_id))
+            self.auto_tasks[task_id] = asyncio.create_task(
+                self._auto_screen_task(event, task_id=task_id)
+            )
             yield event.plain_result(f"已开启自动观察：{task_id}")
 
     @filter.command_group("kpi")
@@ -451,9 +496,12 @@ $bmp.Dispose()
             return
         if not self.is_running:
             self.is_running = True
+
         task_id = f"task_{self.task_counter}"
         self.task_counter += 1
-        self.auto_tasks[task_id] = asyncio.create_task(self._auto_screen_task(event, task_id=task_id))
+        self.auto_tasks[task_id] = asyncio.create_task(
+            self._auto_screen_task(event, task_id=task_id)
+        )
         yield event.plain_result(f"✅ 已启动 {task_id}")
 
     @kpi_group.command("stop")
@@ -490,39 +538,46 @@ $bmp.Dispose()
         custom_prompt = " ".join(prompt).strip()
         if not self.is_running:
             self.is_running = True
+
         task_id = f"task_{self.task_counter}"
         self.task_counter += 1
         self.auto_tasks[task_id] = asyncio.create_task(
-            self._auto_screen_task(event, task_id=task_id, interval=interval, custom_prompt=custom_prompt)
+            self._auto_screen_task(
+                event,
+                task_id=task_id,
+                interval=interval,
+                custom_prompt=custom_prompt
+            )
         )
         yield event.plain_result(f"✅ 已添加 {task_id}，间隔 {interval}s")
 
-    # ---------------------------
+    # =========================
     # 自动任务
-    # ---------------------------
-    async def _auto_screen_task(self, event: AstrMessageEvent, task_id: str, interval: Optional[int] = None, custom_prompt: str = ""):
+    # =========================
+    async def _auto_screen_task(
+        self,
+        event: AstrMessageEvent,
+        task_id: str,
+        interval: Optional[int] = None,
+        custom_prompt: str = ""
+    ):
         logger.info(f"自动任务启动: {task_id}")
         try:
             while self.is_running:
-                # 间隔
                 check_interval = interval if interval is not None else int(self.config.get("check_interval", 180))
                 if check_interval < 10:
                     check_interval = 10
 
-                # 可中断等待
                 for _ in range(check_interval):
                     if not self.is_running:
                         break
                     await asyncio.sleep(1)
-
                 if not self.is_running:
                     break
 
-                # 触发概率
                 prob = int(self.config.get("trigger_probability", 30))
                 prob = max(0, min(100, prob))
-                rnd = __import__("random").randint(1, 100)
-                if rnd > prob:
+                if random.randint(1, 100) > prob:
                     continue
 
                 ok, msg = self._check_env()
@@ -532,12 +587,16 @@ $bmp.Dispose()
 
                 try:
                     image_bytes, title = await asyncio.wait_for(self._capture_screen_bytes(), timeout=20)
+
                     text = await asyncio.wait_for(
-                        self._analyze_screen(image_bytes, active_window_title=title, custom_prompt=custom_prompt),
+                        self._analyze_screen(
+                            image_bytes,
+                            active_window_title=title,
+                            custom_prompt=custom_prompt
+                        ),
                         timeout=150
                     )
 
-                    # 自动任务默认只发文字，防刷屏；如需发图可配 send_image_in_auto=true
                     send_image = bool(self.config.get("send_image_in_auto", False))
                     if send_image:
                         img_path = self._save_temp_jpg(image_bytes)
@@ -546,7 +605,10 @@ $bmp.Dispose()
                             MessageChain([Plain(text), Image(file=img_path)])
                         )
                     else:
-                        await self.context.send_message(event.unified_msg_origin, MessageChain([Plain(text)]))
+                        await self.context.send_message(
+                            event.unified_msg_origin,
+                            MessageChain([Plain(text)])
+                        )
 
                 except asyncio.TimeoutError:
                     logger.warning(f"{task_id} 执行超时")
@@ -561,9 +623,9 @@ $bmp.Dispose()
             if not self.auto_tasks:
                 self.is_running = False
 
-    # ---------------------------
+    # =========================
     # 工具
-    # ---------------------------
+    # =========================
     def _split_message(self, text: str, max_length: int = 1000) -> List[str]:
         if not text:
             return [""]
@@ -578,7 +640,6 @@ $bmp.Dispose()
                 if len(line) <= max_length:
                     cur = line
                 else:
-                    # 超长行硬切
                     start = 0
                     while start < len(line):
                         out.append(line[start:start + max_length])
@@ -587,5 +648,3 @@ $bmp.Dispose()
         if cur:
             out.append(cur)
         return out
-
-
